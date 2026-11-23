@@ -1,0 +1,151 @@
+package editor
+
+import (
+	"strings"
+
+	"github.com/gabrielcunha1232/gotextforge/internal/core/input"
+	"github.com/gabrielcunha1232/gotextforge/internal/core/render"
+)
+
+var logoFont = map[rune][5]string{
+	'G': {" ████", "█    ", "█  ██", "█   █", " ████"},
+	'O': {" ███ ", "█   █", "█   █", "█   █", " ███ "},
+	'T': {"█████", "  █  ", "  █  ", "  █  ", "  █  "},
+	'E': {"█████", "█    ", "████ ", "█    ", "█████"},
+	'X': {"█   █", " █ █ ", "  █  ", " █ █ ", "█   █"},
+	'F': {"█████", "█    ", "████ ", "█    ", "█    "},
+	'R': {"████ ", "█   █", "████ ", "█  █ ", "█   █"},
+}
+
+const logoWord = "GOTEXTFORGE"
+
+var introHints = [][2]string{
+	{"f", "buscar arquivo"},
+	{"e", "explorar a pasta"},
+	{"n", "novo arquivo"},
+	{"p", "trocar de pasta"},
+	{"i", "começar a escrever"},
+	{"q", "sair"},
+}
+
+func (e *Editor) handleDashboardKey(k input.Key) bool {
+	if k.Code != input.KeyRune || k.Mod != 0 {
+		return false
+	}
+	switch k.Rune {
+	case 'f':
+		e.openFileFinder()
+	case 'e':
+		e.openExplorer(true)
+	case 'n':
+		e.promptNewFile()
+	case 'p':
+		e.openExplorer(true)
+		e.message = "Backspace sobe uma pasta · l/Enter entra · . escolhe a pasta do projeto"
+	case 'q':
+		e.quit = true
+	default:
+		return false
+	}
+	return true
+}
+
+func (e *Editor) showIntro() bool {
+	return len(e.docs) == 1 && e.path == "" && e.mode != ModeInsert && !e.buf.Modified() &&
+		e.buf.LineCount() == 1 && e.buf.LineLen(0) == 0
+}
+
+func logoRows() [5]string {
+	var rows [5]string
+	for i := range rows {
+		parts := make([]string, 0, len(logoWord))
+		for _, r := range logoWord {
+			parts = append(parts, logoFont[r][i])
+		}
+		rows[i] = strings.Join(parts, " ")
+	}
+	return rows
+}
+
+func (t *Theme) gradient(pos float64) render.Color {
+	stops := t.Logo[:]
+	if pos <= 0 {
+		return stops[0]
+	}
+	if pos >= 1 {
+		return stops[len(stops)-1]
+	}
+	seg := pos * float64(len(stops)-1)
+	i := int(seg)
+	f := seg - float64(i)
+	a, b := stops[i], stops[i+1]
+	mix := func(x, y uint8) uint8 { return uint8(float64(x) + (float64(y)-float64(x))*f) }
+	return render.RGB(mix(a.R, b.R), mix(a.G, b.G), mix(a.B, b.B))
+}
+
+func (e *Editor) overlayIntro(lines []render.StyledLine) {
+	var block []render.StyledLine
+
+	rows := logoRows()
+	logoWidth := len([]rune(rows[0]))
+	withoutLogo := 2 + 3 + len(introHints) + 2
+	if e.width >= logoWidth+2 && len(lines) >= withoutLogo+len(rows)+1 {
+		for _, row := range rows {
+			var line render.StyledLine
+			for x, r := range []rune(row) {
+				style := render.Style{}
+				if r != ' ' {
+					style = render.Style{Fg: e.theme.gradient(float64(x) / float64(logoWidth-1))}
+				}
+				line = append(line, render.Span{Text: string(r), Style: style})
+			}
+			block = append(block, line)
+		}
+		block = append(block, nil)
+	} else {
+		block = append(block, render.StyledLine{{Text: "gotextforge", Style: render.Style{Fg: e.theme.Blue, Bold: true}}}, nil)
+	}
+
+	block = append(block,
+		render.StyledLine{{Text: "editor modal para Go", Style: e.theme.introSub()}},
+		render.StyledLine{{Text: truncateText(sanitize(e.projectRoot()), max(e.width-4, 1)), Style: render.Style{Fg: e.theme.Dark3}}},
+		nil,
+	)
+	keyWidth, descWidth := 0, 0
+	for _, h := range introHints {
+		keyWidth = max(keyWidth, len([]rune(h[0])))
+		descWidth = max(descWidth, len([]rune(h[1])))
+	}
+	for _, h := range introHints {
+		block = append(block, render.StyledLine{
+			{Text: padRight(h[0], keyWidth+3), Style: e.theme.introKey()},
+			{Text: padRight(h[1], descWidth), Style: e.theme.introDesc()},
+		})
+	}
+
+	if len(block)+2 > len(lines) {
+		return
+	}
+	top := (len(lines) - len(block)) / 2
+	if top < 1 {
+		top = 1
+	}
+	for i, content := range block {
+		left := (e.width - content.Width()) / 2
+		if left < 0 {
+			continue
+		}
+		row := render.StyledLine{{Text: "~", Style: e.theme.tilde()}}
+		if pad := left - 1; pad > 0 {
+			row = append(row, render.Span{Text: strings.Repeat(" ", pad)})
+		}
+		lines[top+i] = truncateLine(append(row, content...), e.width)
+	}
+}
+
+func padRight(s string, n int) string {
+	if w := len([]rune(s)); w < n {
+		return s + strings.Repeat(" ", n-w)
+	}
+	return s
+}
