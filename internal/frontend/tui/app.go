@@ -1,0 +1,99 @@
+package tui
+
+import (
+	"image/color"
+
+	tea "charm.land/bubbletea/v2"
+	"github.com/gabrielcunha1232/gotextforge/internal/core/editor"
+	"github.com/gabrielcunha1232/gotextforge/internal/core/input"
+	"github.com/gabrielcunha1232/gotextforge/internal/core/render"
+)
+
+type model struct {
+	editor    *editor.Editor
+	listening bool
+}
+
+type asyncMsg struct {
+	event any
+}
+
+func (m model) waitAsync() tea.Cmd {
+	ch := m.editor.Async()
+	if ch == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		ev, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return asyncMsg{event: ev}
+	}
+}
+
+func (m model) Init() tea.Cmd {
+	return nil
+}
+
+func (m model) listen() (model, tea.Cmd) {
+	if m.listening {
+		return m, nil
+	}
+	cmd := m.waitAsync()
+	m.listening = cmd != nil
+	return m, cmd
+}
+
+func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case asyncMsg:
+		m.editor.HandleAsync(msg.event)
+		m.listening = true
+		return m, m.waitAsync()
+
+	case tea.WindowSizeMsg:
+		m.editor.HandleEvent(input.NewResizeEvent(msg.Width, msg.Height))
+
+	case tea.KeyPressMsg:
+		key := TranslateKey(msg)
+		if key != (input.Key{}) {
+			m.editor.HandleEvent(input.NewKeyEvent(key))
+		}
+		if m.editor.ShouldQuit() {
+			return m, tea.Quit
+		}
+	}
+
+	return m.listen()
+}
+
+func (m model) View() tea.View {
+	frame := m.editor.Frame()
+	v := tea.NewView(RenderFrame(frame))
+	v.AltScreen = true
+	v.Cursor = tea.NewCursor(frame.Cursor.Col, frame.Cursor.Row)
+	if frame.CursorShape == render.CursorBar {
+		v.Cursor.Shape = tea.CursorBar
+	}
+	if frame.HideCursor {
+		v.Cursor = nil
+	}
+	if th := m.editor.Theme(); th.PaintBg {
+		v.BackgroundColor = rgba(th.Bg)
+		v.ForegroundColor = rgba(th.Fg)
+	}
+	return v
+}
+
+func Run(ed *editor.Editor) error {
+	p := tea.NewProgram(model{
+		editor: ed,
+	})
+	_, err := p.Run()
+	return err
+}
+
+func rgba(c render.Color) color.Color {
+	return color.RGBA{R: c.R, G: c.G, B: c.B, A: 0xff}
+}
